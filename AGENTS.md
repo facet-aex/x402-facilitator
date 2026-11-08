@@ -1,6 +1,7 @@
 # x402-facilitator instructions
 
 - This is a standalone repository; it must never depend on parent/sibling source or configuration.
+- Use npm only and commit this repository's own `package-lock.json` when application code begins.
 - Do not add application code until Phase 4 is explicitly started.
 - Implement `/supported`, `/verify` and `/settle` only for explicitly registered/tested schemes.
 - Capture live `/supported`, token authorization and Fuji settlement evidence before claiming support.
