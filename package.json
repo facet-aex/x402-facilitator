@@ -1,0 +1,39 @@
+{
+  "name": "@facet/x402-facilitator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe:fuji": "tsx scripts/probe-fuji.ts",
+    "check:funding": "tsx scripts/check-demo-funding.ts",
+    "verify:settlement": "tsx scripts/verify-demo-settlement.ts",
+    "check:duplicate": "tsx scripts/check-duplicate-settlement.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "dev": "tsx src/server.ts",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json",
+    "format": "prettier --write src scripts test package.json tsconfig.json",
+    "format:check": "prettier --check src scripts test package.json tsconfig.json",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=24.12.0 <25"
+  },
+  "packageManager": "npm@11.6.2",
+  "dependencies": {
+    "@x402/core": "2.30.0",
+    "@x402/evm": "2.30.0",
+    "fastify": "5.12.8",
+    "pg": "8.23.1",
+    "viem": "2.57.17"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.6",
+    "@types/pg": "8.23.1",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
