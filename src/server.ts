@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import { createPublicClient, http, isAddress } from "viem";
 import { createFujiFacilitator } from "./fuji.js";
 import { validatePaymentRequest } from "./request-validation.js";
+import { settlementRoute } from "./settlement-routing.js";
 
 try {
   loadEnvFile();
@@ -15,18 +16,17 @@ const key = process.env.FACET_FUJI_FACILITATOR_PRIVATE_KEY;
 const rpc =
   process.env.FACET_FUJI_RPC_URL ??
   "https://api.avax-test.network/ext/bc/C/rpc";
-const payTo = process.env.FACET_DEMO_PAY_TO;
 const token = process.env.FACET_FACILITATOR_TOKEN;
-const amount = process.env.FACET_DEMO_AMOUNT_ATOMIC ?? "1000";
+const feeSplitAddress = process.env.FACET_FEE_SPLIT_ADDRESS;
+const maxAmountAtomic = process.env.FACET_MAX_PAYMENT_ATOMIC ?? "100000";
 if (
   !databaseUrl ||
   !key ||
   !/^0x[a-f0-9]{64}$/iu.test(key) ||
-  !payTo ||
-  !isAddress(payTo) ||
   !token ||
   token.length < 32 ||
-  !/^[1-9][0-9]{0,5}$/u.test(amount)
+  !/^[1-9][0-9]*$/u.test(maxAmountAtomic) ||
+  (feeSplitAddress !== undefined && !isAddress(feeSplitAddress))
 )
   throw new Error("FACILITATOR_CONFIG_INVALID");
 const pool = new Pool({
@@ -59,10 +59,19 @@ for (const operation of ["verify", "settle"] as const) {
       return reply.code(401).send({ error: "UNAUTHORIZED" });
     let validated;
     try {
-      validated = validatePaymentRequest(request.body, payTo, amount);
+      validated = validatePaymentRequest(request.body, {
+        maxAmountAtomic: BigInt(maxAmountAtomic),
+      });
     } catch (error) {
       return reply.code(400).send({ error: (error as Error).message });
     }
+    if (
+      settlementRoute(validated.paymentRequirements.payTo, feeSplitAddress) ===
+      "CONTRACT"
+    )
+      return reply
+        .code(501)
+        .send({ error: "CONTRACT_SETTLEMENT_NOT_CONFIGURED" });
     try {
       return operation === "verify"
         ? await facilitator.verify(

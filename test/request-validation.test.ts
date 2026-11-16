@@ -18,6 +18,36 @@ const body = {
 };
 
 describe("facilitator request boundary", () => {
+  it("accepts a dynamic per-version amount and recipient within the configured cap", () => {
+    const dynamic = {
+      ...requirements,
+      amount: "1200",
+      payTo: "0x0000000000000000000000000000000000000002",
+    };
+    const request = {
+      ...body,
+      paymentRequirements: dynamic,
+      paymentPayload: { ...body.paymentPayload, accepted: dynamic },
+    };
+    expect(
+      validatePaymentRequest(request, { maxAmountAtomic: 100000n })
+        .paymentRequirements,
+    ).toEqual(dynamic);
+  });
+
+  it("rejects zero, non-integer and over-cap dynamic amounts", () => {
+    for (const amount of ["0", "1.5", "100001", "-1"]) {
+      const dynamic = { ...requirements, amount };
+      const request = {
+        ...body,
+        paymentRequirements: dynamic,
+        paymentPayload: { ...body.paymentPayload, accepted: dynamic },
+      };
+      expect(() =>
+        validatePaymentRequest(request, { maxAmountAtomic: 100000n }),
+      ).toThrow();
+    }
+  });
   it("accepts only the configured Fuji quote shape", () => {
     expect(
       validatePaymentRequest(body, payTo, "1000").paymentRequirements.network,

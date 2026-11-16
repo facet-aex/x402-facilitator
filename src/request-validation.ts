@@ -1,5 +1,6 @@
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { FUJI_NETWORK, FUJI_FUSD } from "./fuji.js";
+import { isAddress } from "viem";
 
 export interface ValidPaymentRequest {
   paymentPayload: PaymentPayload;
@@ -12,8 +13,8 @@ function record(value: unknown): value is Record<string, unknown> {
 
 export function validatePaymentRequest(
   body: unknown,
-  payTo: string,
-  amount: string,
+  payToOrOptions: string | { maxAmountAtomic: bigint },
+  amount?: string,
 ): ValidPaymentRequest {
   if (
     !record(body) ||
@@ -24,6 +25,18 @@ export function validatePaymentRequest(
     throw new Error("PAYMENT_REQUEST_INVALID");
   const payload = body.paymentPayload;
   const requirements = body.paymentRequirements;
+  const dynamic = typeof payToOrOptions !== "string";
+  const amountValid =
+    typeof requirements.amount === "string" &&
+    /^[1-9][0-9]*$/u.test(requirements.amount) &&
+    (dynamic
+      ? BigInt(requirements.amount) <= payToOrOptions.maxAmountAtomic
+      : requirements.amount === amount);
+  const payToValid =
+    typeof requirements.payTo === "string" &&
+    isAddress(requirements.payTo) &&
+    (dynamic ||
+      requirements.payTo.toLowerCase() === payToOrOptions.toLowerCase());
   if (
     payload.x402Version !== 2 ||
     !record(payload.accepted) ||
@@ -34,8 +47,8 @@ export function validatePaymentRequest(
     requirements.scheme !== "exact" ||
     requirements.network !== FUJI_NETWORK ||
     String(requirements.asset).toLowerCase() !== FUJI_FUSD.toLowerCase() ||
-    requirements.amount !== amount ||
-    String(requirements.payTo).toLowerCase() !== payTo.toLowerCase()
+    !amountValid ||
+    !payToValid
   )
     throw new Error("PAYMENT_REQUIREMENTS_MISMATCH");
   if (
