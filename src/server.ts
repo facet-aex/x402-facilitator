@@ -10,6 +10,10 @@ import {
   submitContractAction,
   type ContractAction,
 } from "./contract-operations.js";
+import {
+  createReceiptWriter,
+  recordPaidReceipt,
+} from "./receipt-operations.js";
 
 try {
   loadEnvFile();
@@ -23,6 +27,8 @@ const rpc =
   "https://api.avax-test.network/ext/bc/C/rpc";
 const token = process.env.FACET_FACILITATOR_TOKEN;
 const feeSplitAddress = process.env.FACET_FEE_SPLIT_ADDRESS;
+const receiptAddress = process.env.FACET_RECEIPT_LOG_ADDRESS;
+const receiptKey = process.env.FACET_RECEIPT_RECORDER_PRIVATE_KEY;
 const maxAmountAtomic = process.env.FACET_MAX_PAYMENT_ATOMIC ?? "100000";
 if (
   !databaseUrl ||
@@ -52,6 +58,12 @@ const balance = await chainClient.getBalance({
   address: signerAddress,
 });
 if (balance === 0n) throw new Error("FUJI_SIGNER_UNFUNDED");
+if (!!receiptAddress !== !!receiptKey)
+  throw new Error("RECEIPT_CONFIG_INCOMPLETE");
+const receiptWriter =
+  receiptAddress && receiptKey
+    ? await createReceiptWriter(rpc, receiptAddress, receiptKey)
+    : undefined;
 const app = Fastify({ logger: false, bodyLimit: 65_536 });
 
 app.get("/health/live", async () => ({
@@ -62,6 +74,29 @@ app.get("/supported", async (request, reply) => {
   if (request.headers["x-facet-facilitator-token"] !== token)
     return reply.code(401).send({ error: "UNAUTHORIZED" });
   return facilitator.getSupported();
+});
+app.post("/v1/receipt", async (request, reply) => {
+  if (request.headers["x-facet-facilitator-token"] !== token)
+    return reply.code(401).send({ error: "UNAUTHORIZED" });
+  if (!receiptWriter)
+    return reply.code(501).send({ error: "RECEIPT_NOT_CONFIGURED" });
+  try {
+    const result = await recordPaidReceipt(pool, receiptWriter, request.body);
+    return reply.code(result.status === "PENDING" ? 202 : 200).send({
+      status: result.status,
+      transaction: result.hash,
+      ...(result.status === "CONFIRMED"
+        ? { blockNumber: result.blockNumber.toString() }
+        : {}),
+    });
+  } catch (error) {
+    const code = (error as Error).message;
+    if (code === "OPERATOR_PENDING_TRANSACTION")
+      return reply.code(409).send({ error: code });
+    if (/^(RECEIPT_|PHASE_REQUEST_)/u.test(code))
+      return reply.code(400).send({ error: code });
+    return reply.code(502).send({ error: "RECEIPT_OPERATION_FAILED" });
+  }
 });
 app.post<{ Params: { phase: string } }>(
   "/v1/contract/:phase",
