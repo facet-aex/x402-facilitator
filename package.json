@@ -9,6 +9,7 @@
     "verify:settlement": "tsx scripts/verify-demo-settlement.ts",
     "check:duplicate": "tsx scripts/check-duplicate-settlement.ts",
     "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate:prod": "node scripts/migrate.mjs",
     "dev": "tsx src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",

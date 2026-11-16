@@ -89,7 +89,7 @@ for (const operation of ["verify", "settle"] as const) {
 }
 
 await app.listen({
-  host: "127.0.0.1",
+  host: process.env.FACET_FACILITATOR_HOST ?? "127.0.0.1",
   port: Number(process.env.FACET_FACILITATOR_PORT ?? "4022"),
 });
 for (const signal of ["SIGINT", "SIGTERM"] as const)
