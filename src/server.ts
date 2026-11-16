@@ -5,6 +5,7 @@ import { createPublicClient, http, isAddress } from "viem";
 import { createFujiFacilitator } from "./fuji.js";
 import { validatePaymentRequest } from "./request-validation.js";
 import { settlementRoute } from "./settlement-routing.js";
+import { verifyFeeContractConfig } from "./contract-config.js";
 
 try {
   loadEnvFile();
@@ -38,7 +39,15 @@ const { facilitator, signerAddress } = await createFujiFacilitator(
   rpc,
   key as `0x${string}`,
 );
-const balance = await createPublicClient({ transport: http(rpc) }).getBalance({
+const chainClient = createPublicClient({ transport: http(rpc) });
+if (feeSplitAddress)
+  await verifyFeeContractConfig(
+    chainClient,
+    feeSplitAddress,
+    signerAddress,
+    process.env.FACET_RUNNER_ADDRESS,
+  );
+const balance = await chainClient.getBalance({
   address: signerAddress,
 });
 if (balance === 0n) throw new Error("FUJI_SIGNER_UNFUNDED");
