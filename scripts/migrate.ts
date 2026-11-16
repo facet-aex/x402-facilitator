@@ -16,6 +16,12 @@ try {
       "utf8",
     ),
   );
+  await pool.query(
+    await readFile(
+      new URL("../drizzle/0002_contract_phases.sql", import.meta.url),
+      "utf8",
+    ),
+  );
   process.stdout.write("Facilitator pending-settlement migration applied.\n");
 } finally {
   await pool.end();
