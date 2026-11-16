@@ -1,6 +1,6 @@
 # x402-facilitator
 
-Self-hosted x402 facilitator for the local Fuji Demo Track.
+Self-hosted x402 facilitator for the supervised local Fuji MVP. It already settles the preconfigured-payer path; ADR-0014 adds CLI-created agent wallet and policy authority upstream.
 
 **Status:** fUSD Fuji RPC/token probe and live `/supported` passed; `/verify` and `/settle` completed one real 0.001 fUSD x402 payment through MCP/Gateway. The receipt has one Transfer event and a consumed EIP-3009 nonce. See the root `docs/implementation/demo-runbook.md`. Timeout-after-broadcast and restart fault checks remain open.
 
