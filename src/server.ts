@@ -6,6 +6,10 @@ import { createFujiFacilitator } from "./fuji.js";
 import { validatePaymentRequest } from "./request-validation.js";
 import { settlementRoute } from "./settlement-routing.js";
 import { verifyFeeContractConfig } from "./contract-config.js";
+import {
+  submitContractAction,
+  type ContractAction,
+} from "./contract-operations.js";
 
 try {
   loadEnvFile();
@@ -34,11 +38,8 @@ const pool = new Pool({
   connectionString: databaseUrl,
   application_name: "facet-x402-facilitator",
 });
-const { facilitator, signerAddress } = await createFujiFacilitator(
-  pool,
-  rpc,
-  key as `0x${string}`,
-);
+const clients = await createFujiFacilitator(pool, rpc, key as `0x${string}`);
+const { facilitator, signerAddress } = clients;
 const chainClient = createPublicClient({ transport: http(rpc) });
 if (feeSplitAddress)
   await verifyFeeContractConfig(
@@ -62,6 +63,54 @@ app.get("/supported", async (request, reply) => {
     return reply.code(401).send({ error: "UNAUTHORIZED" });
   return facilitator.getSupported();
 });
+app.post<{ Params: { phase: string } }>(
+  "/v1/contract/:phase",
+  async (request, reply) => {
+    if (request.headers["x-facet-facilitator-token"] !== token)
+      return reply.code(401).send({ error: "UNAUTHORIZED" });
+    if (!feeSplitAddress)
+      return reply
+        .code(501)
+        .send({ error: "CONTRACT_SETTLEMENT_NOT_CONFIGURED" });
+    const phase = request.params.phase as ContractAction;
+    if (!["DEPOSIT", "SETTLE_RUN", "SETTLE_RESULT", "REFUND"].includes(phase))
+      return reply.code(400).send({ error: "CONTRACT_PHASE_INVALID" });
+    if (phase === "DEPOSIT" || phase === "SETTLE_RUN") {
+      try {
+        validatePaymentRequest(
+          { x402Version: 2, ...(request.body as object) },
+          { maxAmountAtomic: BigInt(maxAmountAtomic) },
+        );
+      } catch {
+        return reply.code(400).send({ error: "PAYMENT_REQUEST_INVALID" });
+      }
+    }
+    try {
+      const result = await submitContractAction(
+        pool,
+        clients,
+        feeSplitAddress,
+        phase,
+        request.body,
+        BigInt(maxAmountAtomic),
+      );
+      return reply.code(result.status === "PENDING" ? 202 : 200).send({
+        status: result.status,
+        transaction: result.hash,
+        ...(result.status === "CONFIRMED"
+          ? { blockNumber: result.blockNumber.toString() }
+          : {}),
+      });
+    } catch (error) {
+      const code = (error as Error).message;
+      if (/^(CONTRACT_|USAGE_|PAYMENT_AMOUNT_|PHASE_REQUEST_)/u.test(code))
+        return reply.code(400).send({ error: code });
+      if (code === "OPERATOR_PENDING_TRANSACTION")
+        return reply.code(409).send({ error: code });
+      return reply.code(502).send({ error: "CONTRACT_OPERATION_FAILED" });
+    }
+  },
+);
 for (const operation of ["verify", "settle"] as const) {
   app.post(`/${operation}`, async (request, reply) => {
     if (request.headers["x-facet-facilitator-token"] !== token)
@@ -75,8 +124,9 @@ for (const operation of ["verify", "settle"] as const) {
       return reply.code(400).send({ error: (error as Error).message });
     }
     if (
+      operation === "settle" &&
       settlementRoute(validated.paymentRequirements.payTo, feeSplitAddress) ===
-      "CONTRACT"
+        "CONTRACT"
     )
       return reply
         .code(501)

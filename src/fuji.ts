@@ -94,5 +94,5 @@ export async function createFujiFacilitator(
       pendingSettlementStore: new PostgresPendingSettlementStore(pool),
     }),
   );
-  return { facilitator, signerAddress: account.address };
+  return { facilitator, signerAddress: account.address, wallet, publicClient };
 }
