@@ -1,8 +1,13 @@
 name: docker-publish
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -41,3 +46,105 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    if: ${{ vars.GCP_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT || vars.GCP_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID || vars.GCP_PROJECT_ID }}
+      GCP_ZONE: ${{ secrets.GCP_ZONE || vars.GCP_ZONE }}
+      GCP_INSTANCE_NAME: ${{ secrets.GCP_INSTANCE_NAME || vars.GCP_INSTANCE_NAME }}
+      GCP_SSH_USER: ${{ secrets.GCP_SSH_USER || vars.GCP_SSH_USER }}
+      GCP_DEPLOY_DIR: ${{ vars.GCP_DEPLOY_DIR || '/opt/facet/deploy' }}
+      GHCR_OWNER: ${{ vars.GHCR_OWNER || github.repository_owner }}
+      GHCR_READ_TOKEN: ${{ secrets.GHCR_READ_TOKEN }}
+    steps:
+      - name: Validate GCP deploy configuration
+        run: |
+          for var in GCP_PROJECT_ID GCP_ZONE GCP_INSTANCE_NAME; do
+            if [ -z "${!var}" ]; then
+              echo "Missing required configuration: $var" >&2
+              exit 1
+            fi
+          done
+          if [ -z "$GCP_WIF_PROVIDER" ] && [ -z "$GCP_SA_KEY" ]; then
+            echo "Set either GCP_WORKLOAD_IDENTITY_PROVIDER (+ GCP_SERVICE_ACCOUNT) or GCP_SA_KEY" >&2
+            exit 1
+          fi
+          if [ -n "$GCP_WIF_PROVIDER" ] && [ -z "$GCP_SERVICE_ACCOUNT" ]; then
+            echo "Missing GCP_SERVICE_ACCOUNT for Workload Identity Federation" >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud (WIF)
+        if: ${{ env.GCP_WIF_PROVIDER != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (SA Key)
+        if: ${{ env.GCP_WIF_PROVIDER == '' && env.GCP_SA_KEY != '' }}
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Sync GHCR credentials on VM (optional)
+        if: ${{ env.GHCR_READ_TOKEN != '' }}
+        run: |
+          TARGET="${GCP_SSH_USER:+${GCP_SSH_USER}@}${GCP_INSTANCE_NAME}"
+          OWNER_LOWER="${GHCR_OWNER,,}"
+          printf '%s' "$GHCR_READ_TOKEN" | gcloud compute ssh "$TARGET" \
+            --quiet --tunnel-through-iap \
+            --project="$GCP_PROJECT_ID" --zone="$GCP_ZONE" \
+            --command="set -euo pipefail; mkdir -p '$GCP_DEPLOY_DIR/.docker' 2>/dev/null || sudo -n mkdir -p '$GCP_DEPLOY_DIR/.docker'; if docker info >/dev/null 2>&1; then DOCKER_CONFIG='$GCP_DEPLOY_DIR/.docker' docker login ghcr.io -u '$OWNER_LOWER' --password-stdin; else sudo -n env DOCKER_CONFIG='$GCP_DEPLOY_DIR/.docker' docker login ghcr.io -u '$OWNER_LOWER' --password-stdin; fi"
+
+      - name: Deploy x402-facilitator to GCP VM
+        run: |
+          TARGET="${GCP_SSH_USER:+${GCP_SSH_USER}@}${GCP_INSTANCE_NAME}"
+          OWNER_LOWER="${GHCR_OWNER,,}"
+          gcloud compute ssh "$TARGET" \
+            --quiet --tunnel-through-iap \
+            --project="$GCP_PROJECT_ID" --zone="$GCP_ZONE" \
+            --command="bash -s" <<EOF
+          set -euo pipefail
+          DEPLOY_DIR='$GCP_DEPLOY_DIR'
+          OWNER='$OWNER_LOWER'
+          if docker info >/dev/null 2>&1; then
+            run_docker() { env "DOCKER_CONFIG=\$DEPLOY_DIR/.docker" docker "\$@"; }
+            run_root() { "\$@"; }
+          else
+            run_docker() { sudo -n env "DOCKER_CONFIG=\$DEPLOY_DIR/.docker" docker "\$@"; }
+            run_root() { sudo -n "\$@"; }
+          fi
+          run_root mkdir -p "\$DEPLOY_DIR/.docker"
+          if ! run_root test -s "\$DEPLOY_DIR/.docker/config.json"; then
+            if run_root test -s "\$DEPLOY_DIR/.ghcr-token"; then
+              run_root tr -d '\r\n' < "\$DEPLOY_DIR/.ghcr-token" | run_docker login ghcr.io -u "\$OWNER" --password-stdin
+            elif run_root test -s /root/.docker/config.json; then
+              run_root install -m 600 /root/.docker/config.json "\$DEPLOY_DIR/.docker/config.json"
+            elif [ -s "\$HOME/.docker/config.json" ]; then
+              run_root install -m 600 "\$HOME/.docker/config.json" "\$DEPLOY_DIR/.docker/config.json"
+            fi
+          fi
+          cd "\$DEPLOY_DIR"
+          exec 9>/tmp/facet-deploy.lock
+          flock -w 300 9
+          run_docker compose -f docker-compose.prod.yml pull x402-facilitator
+          run_docker compose -f docker-compose.prod.yml run --rm --no-deps x402-facilitator node scripts/migrate.mjs
+          run_docker compose -f docker-compose.prod.yml up -d --no-deps x402-facilitator
+          run_docker image prune -f >/dev/null 2>&1 || true
+          run_docker compose -f docker-compose.prod.yml ps --status running x402-facilitator
+          EOF
