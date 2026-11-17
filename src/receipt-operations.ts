@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   encodeFunctionData,
   http,
   isAddress,
@@ -22,6 +23,53 @@ const abi = parseAbi([
   "function recordReceipt(bytes32,bytes32,bytes32,bytes32,uint256,bytes32,bytes)",
   "function getReceipt(bytes32) view returns ((bytes32 facetId,bytes32 inputHash,bytes32 outputHash,uint256 itemCount,bytes32 paymentTxHash,address runnerSigner))",
 ]);
+const feeEvents = parseAbi([
+  "event FeeSplitSettled(bytes32 indexed runId,bytes32 indexed facetId,address indexed creatorPayTo,uint256 creatorAmount,uint256 platformFee)",
+  "event TaskEscrowSettled(bytes32 indexed runId,bytes32 indexed facetId,uint256 itemCount,uint256 actualAmount,uint256 refundAmount)",
+]);
+
+export function assertFeePaymentReceipt(
+  receipt: {
+    status: string;
+    to: Address | null;
+    logs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[];
+  },
+  feeSplitAddress: Address,
+  runKey: Hex,
+  facetKey: Hex,
+  itemCount: bigint,
+) {
+  if (
+    receipt.status !== "success" ||
+    receipt.to?.toLowerCase() !== feeSplitAddress.toLowerCase()
+  )
+    throw new Error("RECEIPT_PAYMENT_UNLINKED");
+  for (const log of receipt.logs) {
+    if (
+      log.address.toLowerCase() !== feeSplitAddress.toLowerCase() ||
+      !log.topics.length
+    )
+      continue;
+    try {
+      const event = decodeEventLog({
+        abi: feeEvents,
+        data: log.data,
+        topics: log.topics as [Hex, ...Hex[]],
+      });
+      if (event.args.runId !== runKey || event.args.facetId !== facetKey)
+        continue;
+      if (
+        event.eventName === "FeeSplitSettled" ||
+        (event.eventName === "TaskEscrowSettled" &&
+          event.args.itemCount === itemCount)
+      )
+        return;
+    } catch {
+      /* unrelated log */
+    }
+  }
+  throw new Error("RECEIPT_PAYMENT_UNLINKED");
+}
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const sha = /^sha256:([0-9a-f]{64})$/iu;
 const rawSha = (value: unknown): Hex => {
@@ -34,8 +82,13 @@ export async function createReceiptWriter(
   rpc: string,
   address: string,
   key: string,
+  feeSplitAddress: string,
 ) {
-  if (!isAddress(address) || !/^0x[0-9a-f]{64}$/iu.test(key))
+  if (
+    !isAddress(address) ||
+    !isAddress(feeSplitAddress) ||
+    !/^0x[0-9a-f]{64}$/iu.test(key)
+  )
     throw new Error("RECEIPT_CONFIG_INVALID");
   const account = privateKeyToAccount(key as Hex);
   const publicClient = createPublicClient({
@@ -56,7 +109,14 @@ export async function createReceiptWriter(
     chain: avalancheFuji,
     transport: http(rpc),
   });
-  return { address: address as Address, account, publicClient, wallet, runner };
+  return {
+    address: address as Address,
+    feeSplitAddress: feeSplitAddress as Address,
+    account,
+    publicClient,
+    wallet,
+    runner,
+  };
 }
 
 export async function recordPaidReceipt(
@@ -90,8 +150,13 @@ export async function recordPaidReceipt(
   const paymentReceipt = await writer.publicClient.getTransactionReceipt({
     hash: paymentHash,
   });
-  if (paymentReceipt.status !== "success")
-    throw new Error("RECEIPT_PAYMENT_UNCONFIRMED");
+  assertFeePaymentReceipt(
+    paymentReceipt,
+    writer.feeSplitAddress,
+    runKey,
+    facetKey,
+    itemCount,
+  );
   const data = encodeFunctionData({
     abi,
     functionName: "recordReceipt",

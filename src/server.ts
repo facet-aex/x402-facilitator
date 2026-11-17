@@ -60,9 +60,16 @@ const balance = await chainClient.getBalance({
 if (balance === 0n) throw new Error("FUJI_SIGNER_UNFUNDED");
 if (!!receiptAddress !== !!receiptKey)
   throw new Error("RECEIPT_CONFIG_INCOMPLETE");
+if (receiptAddress && !feeSplitAddress)
+  throw new Error("RECEIPT_FEE_CONTRACT_REQUIRED");
 const receiptWriter =
-  receiptAddress && receiptKey
-    ? await createReceiptWriter(rpc, receiptAddress, receiptKey)
+  receiptAddress && receiptKey && feeSplitAddress
+    ? await createReceiptWriter(
+        rpc,
+        receiptAddress,
+        receiptKey,
+        feeSplitAddress,
+      )
     : undefined;
 const app = Fastify({ logger: false, bodyLimit: 65_536 });
 

@@ -59,10 +59,38 @@ export async function submitContractPhase(
         blockNumber: BigInt(row.block_number!),
       };
     if (!row) {
-      const pending = await db.query(
-        "SELECT 1 FROM facet_contract_phases WHERE status='PENDING' LIMIT 1",
+      const pending = await db.query<{
+        run_id: string;
+        phase: string;
+        tx_hash: Hex;
+        raw_tx: Hex;
+      }>(
+        "SELECT run_id,phase,tx_hash,raw_tx FROM facet_contract_phases WHERE status='PENDING' ORDER BY updated_at LIMIT 1",
       );
-      if (pending.rows[0]) throw new Error("OPERATOR_PENDING_TRANSACTION");
+      if (pending.rows[0]) {
+        const stale = pending.rows[0];
+        try {
+          await request.broadcast(stale.raw_tx);
+        } catch {
+          /* check chain receipt */
+        }
+        let resolved;
+        try {
+          resolved = await request.receipt(stale.tx_hash);
+        } catch {
+          resolved = null;
+        }
+        if (!resolved) throw new Error("OPERATOR_PENDING_TRANSACTION");
+        await db.query(
+          "UPDATE facet_contract_phases SET status=$3,block_number=$4,updated_at=now() WHERE run_id=$1 AND phase=$2",
+          [
+            stale.run_id,
+            stale.phase,
+            resolved.status === "success" ? "CONFIRMED" : "REVERTED",
+            resolved.blockNumber.toString(),
+          ],
+        );
+      }
       const signed = await request.prepare();
       await db.query(
         "INSERT INTO facet_contract_phases(run_id,phase,request_hash,tx_hash,raw_tx,status) VALUES($1,$2,$3,$4,$5,'PENDING')",

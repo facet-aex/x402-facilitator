@@ -68,3 +68,63 @@ test.skipIf(process.env.FACET_DB_TEST !== "1")(
     }
   },
 );
+
+test.skipIf(process.env.FACET_DB_TEST !== "1")(
+  "reconciles an abandoned pending phase before accepting a new payment",
+  async () => {
+    loadEnvFile();
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const oldRun = randomUUID(),
+      newRun = randomUUID();
+    let oldMined = false;
+    const oldHash = `0x${"1".repeat(64)}` as const;
+    const newHash = `0x${"2".repeat(64)}` as const;
+    const base = {
+      phase: "SETTLE_RUN" as const,
+      requestHash: `sha256:${"3".repeat(64)}`,
+      broadcast: async () => {},
+      receipt: async (hash: `0x${string}`) =>
+        hash === oldHash && !oldMined
+          ? null
+          : { status: "success" as const, blockNumber: 456n },
+    };
+    try {
+      expect(
+        (
+          await submitContractPhase(pool, {
+            ...base,
+            runId: oldRun,
+            prepare: async () => ({
+              hash: oldHash,
+              raw: `0x${"4".repeat(130)}` as const,
+            }),
+          })
+        ).status,
+      ).toBe("PENDING");
+      oldMined = true;
+      expect(
+        (
+          await submitContractPhase(pool, {
+            ...base,
+            runId: newRun,
+            prepare: async () => ({
+              hash: newHash,
+              raw: `0x${"5".repeat(130)}` as const,
+            }),
+          })
+        ).status,
+      ).toBe("CONFIRMED");
+      const old = await pool.query(
+        "SELECT status FROM facet_contract_phases WHERE run_id=$1",
+        [oldRun],
+      );
+      expect(old.rows[0].status).toBe("CONFIRMED");
+    } finally {
+      await pool.query(
+        "DELETE FROM facet_contract_phases WHERE run_id IN ($1,$2)",
+        [oldRun, newRun],
+      );
+      await pool.end();
+    }
+  },
+);
