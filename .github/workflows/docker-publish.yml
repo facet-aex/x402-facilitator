@@ -143,7 +143,7 @@ jobs:
           exec 9>/tmp/facet-deploy.lock
           flock -w 300 9
           run_docker compose -f docker-compose.prod.yml pull x402-facilitator
-          run_docker compose -f docker-compose.prod.yml run --rm --no-deps x402-facilitator node scripts/migrate.mjs
+          run_docker compose -f docker-compose.prod.yml run --rm --no-deps -T x402-facilitator node scripts/migrate.mjs </dev/null
           run_docker compose -f docker-compose.prod.yml up -d --no-deps x402-facilitator
           run_docker image prune -f >/dev/null 2>&1 || true
           run_docker compose -f docker-compose.prod.yml ps --status running x402-facilitator
