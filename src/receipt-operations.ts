@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   createPublicClient,
   createWalletClient,
@@ -16,6 +15,9 @@ import { avalancheFuji } from "viem/chains";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Pool } from "pg";
 import { submitContractPhase } from "./contract-phase-store.js";
+import { canonicalJson, hashCanonical } from "./contract-operations.js";
+
+export { canonicalJson };
 
 const abi = parseAbi([
   "function recorder() view returns (address)",
@@ -170,7 +172,7 @@ export async function recordPaidReceipt(
       input.runnerSignature as Hex,
     ],
   });
-  const requestHash = `sha256:${createHash("sha256").update(JSON.stringify(input)).digest("hex")}`;
+  const requestHash = hashCanonical(input);
   const result = await submitContractPhase(pool, {
     runId: input.runId,
     phase: "RECEIPT",
