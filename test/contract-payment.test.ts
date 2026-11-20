@@ -57,3 +57,61 @@ test("extracts only an exact EOA EIP-3009 authorization addressed to the contrac
     ),
   ).toThrow("CONTRACT_AUTHORIZATION_INVALID");
 });
+
+test("rejects zero-address payer and validBefore >= 2^256 with CONTRACT_AUTHORIZATION_INVALID", () => {
+  const zeroPayer = "0x0000000000000000000000000000000000000000";
+  expect(() =>
+    contractAuthorization(
+      {
+        ...payload,
+        payload: {
+          ...payload.payload,
+          authorization: {
+            ...((payload.payload as Record<string, unknown>)
+              .authorization as Record<string, unknown>),
+            from: zeroPayer,
+          },
+        },
+      } as PaymentPayload,
+      requirements,
+      contract,
+    ),
+  ).toThrow("CONTRACT_AUTHORIZATION_INVALID");
+
+  const overflowUint256 = (1n << 256n).toString();
+  expect(() =>
+    contractAuthorization(
+      {
+        ...payload,
+        payload: {
+          ...payload.payload,
+          authorization: {
+            ...((payload.payload as Record<string, unknown>)
+              .authorization as Record<string, unknown>),
+            validBefore: overflowUint256,
+          },
+        },
+      } as PaymentPayload,
+      requirements,
+      contract,
+    ),
+  ).toThrow("CONTRACT_AUTHORIZATION_INVALID");
+
+  expect(() =>
+    contractAuthorization(
+      {
+        ...payload,
+        payload: {
+          ...payload.payload,
+          authorization: {
+            ...((payload.payload as Record<string, unknown>)
+              .authorization as Record<string, unknown>),
+            validAfter: overflowUint256,
+          },
+        },
+      } as PaymentPayload,
+      requirements,
+      contract,
+    ),
+  ).toThrow("CONTRACT_AUTHORIZATION_INVALID");
+});
