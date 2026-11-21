@@ -232,6 +232,67 @@ describe("facilitator request boundary", () => {
     }
   });
 
+  it("validates extra.authorizationType and rejects mismatched accepted.extra.authorizationType", () => {
+    const reqReceive = {
+      ...requirements,
+      extra: {
+        name: "FACET USD",
+        version: "2",
+        authorizationType: "ReceiveWithAuthorization",
+      },
+    };
+    expect(
+      validatePaymentRequest(
+        {
+          ...body,
+          paymentRequirements: reqReceive,
+          paymentPayload: { ...body.paymentPayload, accepted: reqReceive },
+        },
+        { maxAmountAtomic: 100000n },
+      ).paymentRequirements,
+    ).toEqual(reqReceive);
+
+    const badAuthType = {
+      ...requirements,
+      extra: {
+        name: "FACET USD",
+        version: "2",
+        authorizationType: "Permit",
+      },
+    };
+    expect(() =>
+      validatePaymentRequest(
+        {
+          ...body,
+          paymentRequirements: badAuthType,
+          paymentPayload: { ...body.paymentPayload, accepted: badAuthType },
+        },
+        { maxAmountAtomic: 100000n },
+      ),
+    ).toThrow("PAYMENT_REQUIREMENTS_MISMATCH");
+
+    expect(() =>
+      validatePaymentRequest(
+        {
+          ...body,
+          paymentRequirements: reqReceive,
+          paymentPayload: {
+            ...body.paymentPayload,
+            accepted: {
+              ...reqReceive,
+              extra: {
+                name: "FACET USD",
+                version: "2",
+                authorizationType: "TransferWithAuthorization",
+              },
+            },
+          },
+        },
+        { maxAmountAtomic: 100000n },
+      ),
+    ).toThrow("PAYMENT_ACCEPTED_MISMATCH");
+  });
+
   it("rejects PAY_PER_RUN extra with maxItemsCap present", () => {
     const bad = {
       ...requirements,

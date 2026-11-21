@@ -15,6 +15,7 @@ import { createFujiFacilitator } from "./fuji.js";
 import { validatePaymentRequest } from "./request-validation.js";
 import { settlementRoute } from "./settlement-routing.js";
 import { verifyFeeContractConfig } from "./contract-config.js";
+import { verifyReceiveAuthorization } from "./receive-auth.js";
 import {
   submitContractAction,
   type ContractAction,
@@ -171,12 +172,20 @@ export function buildFacilitatorApp({
           request.body,
           maxAmountAtomic,
         );
+        const extraResult = result as {
+          escrowExpiresAt?: string;
+          alreadyRefunded?: boolean;
+        };
         return reply.code(result.status === "PENDING" ? 202 : 200).send({
           status: result.status,
           transaction: result.hash,
           ...(result.status === "CONFIRMED"
             ? { blockNumber: result.blockNumber.toString() }
             : {}),
+          ...(extraResult.escrowExpiresAt
+            ? { escrowExpiresAt: extraResult.escrowExpiresAt }
+            : {}),
+          ...(extraResult.alreadyRefunded ? { alreadyRefunded: true } : {}),
         });
       } catch (error) {
         const code = (error as Error).message;
@@ -211,6 +220,32 @@ export function buildFacilitatorApp({
           .code(501)
           .send({ error: "CONTRACT_SETTLEMENT_NOT_CONFIGURED" });
       try {
+        if (
+          operation === "verify" &&
+          feeSplitAddress &&
+          settlementRoute(
+            validated.paymentRequirements.payTo,
+            feeSplitAddress,
+          ) === "CONTRACT"
+        ) {
+          const authType = (
+            validated.paymentRequirements.extra as
+              | { authorizationType?: unknown }
+              | undefined
+          )?.authorizationType;
+          if (authType !== "ReceiveWithAuthorization") {
+            return {
+              isValid: false,
+              invalidReason: "AUTHORIZATION_TYPE_MISMATCH",
+            };
+          }
+          return await verifyReceiveAuthorization({
+            publicClient: clients.publicClient,
+            payload: validated.paymentPayload,
+            requirements: validated.paymentRequirements,
+            expectedRecipient: feeSplitAddress,
+          });
+        }
         return operation === "verify"
           ? await facilitator.verify(
               validated.paymentPayload,

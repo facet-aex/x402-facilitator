@@ -44,6 +44,13 @@ export function validateExtraMetadata(
   amountAtomic: string,
 ): void {
   if (
+    extra.authorizationType !== undefined &&
+    extra.authorizationType !== "ReceiveWithAuthorization" &&
+    extra.authorizationType !== "TransferWithAuthorization"
+  )
+    throw new Error("PAYMENT_REQUIREMENTS_MISMATCH");
+
+  if (
     extra.providerPayTo !== undefined &&
     !isNonZeroAddress(extra.providerPayTo)
   )
@@ -88,6 +95,7 @@ export function assertMatchingExtraFields(
   if (
     acceptedExtra.name !== requirementsExtra.name ||
     acceptedExtra.version !== requirementsExtra.version ||
+    acceptedExtra.authorizationType !== requirementsExtra.authorizationType ||
     acceptedExtra.pricingModel !== requirementsExtra.pricingModel ||
     acceptedExtra.unitPriceAtomic !== requirementsExtra.unitPriceAtomic ||
     acceptedExtra.maxItemsCap !== requirementsExtra.maxItemsCap ||

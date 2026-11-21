@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
-import { decodeFunctionData, parseAbi, type Address, type Hex } from "viem";
+import { decodeFunctionData, parseAbi, verifyTypedData, type Address, type Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import type { Pool } from "pg";
 import type { createFujiFacilitator } from "../src/fuji.js";
 import {
@@ -10,12 +11,15 @@ import {
 import { buildFacilitatorApp, parseFacilitatorConfig } from "../src/server.js";
 
 const escrowAbi = parseAbi([
-  "function depositEscrowWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint256,uint256,bytes32,bytes)",
+  "function depositEscrowWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint64,uint256,uint256,bytes32,bytes)",
   "function settlePayPerRunWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint256,bytes32,bytes)",
+  "function settleEscrow(bytes32,bytes32,bytes32,uint256,bytes)",
 ]);
 
+const PAYER_KEY = `0x${"a".repeat(64)}` as Hex;
+const payerAccount = privateKeyToAccount(PAYER_KEY);
 const feeSplit = "0xc50cb5d5ff6c71eb1b065971c198a9edb0ecff06" as Address;
-const payer = "0xA8fd48580a3f16B86cfC9c4efbd9fa68bC0F4E3B" as Address;
+const payer = payerAccount.address;
 const creator = "0x0000000000000000000000000000000000000002" as Address;
 const requirements = {
   scheme: "exact",
@@ -115,10 +119,16 @@ function createMockPhasePool() {
   return { pool, rows };
 }
 
-function createMockClients(options?: { receiptPendingOnce?: boolean }) {
+function createMockClients(options?: {
+  receiptPendingOnce?: boolean;
+  onChainRunState?: number;
+  escrowExpiresAtSec?: bigint;
+  skipSignatureCheck?: boolean;
+}) {
   const preparedData: Hex[] = [];
   let receiptCalls = 0;
   const rawTx = `0x${"f".repeat(130)}` as Hex;
+  const expiresAtSec = options?.escrowExpiresAtSec ?? 1_800_000_900n;
   const clients = {
     facilitator: {
       verify: async () => ({ isValid: true, payer }),
@@ -135,11 +145,29 @@ function createMockClients(options?: { receiptPendingOnce?: boolean }) {
       sendRawTransaction: async () => `0x${"e".repeat(64)}` as Hex,
     },
     publicClient: {
+      verifyTypedData: async (args: Parameters<typeof verifyTypedData>[0]) =>
+        options?.skipSignatureCheck === false ? verifyTypedData(args) : true,
+      readContract: async ({ functionName }: { functionName: string }) => {
+        if (functionName === "authorizationState") return false;
+        if (functionName === "balanceOf") return 10_000_000n;
+        if (functionName === "runState") return options?.onChainRunState ?? 1;
+        if (functionName === "escrows") {
+          return [
+            `0x${"0".repeat(64)}`,
+            payer,
+            creator,
+            500n,
+            5000n,
+            expiresAtSec,
+          ];
+        }
+        return 0n;
+      },
       waitForTransactionReceipt: async () => {
         receiptCalls++;
         if (options?.receiptPendingOnce && receiptCalls === 1)
           throw new Error("TIMEOUT");
-        return { status: "success" as const, blockNumber: 42n };
+        return { status: "success" as const, blockNumber: 42n, logs: [] };
       },
     },
   } as unknown as Awaited<ReturnType<typeof createFujiFacilitator>>;
@@ -691,4 +719,160 @@ test("DEPOSIT supports boundary maxItemsCap 1 and 1000, and SETTLE_RUN enforces 
   });
   expect(decodedSettle.functionName).toBe("settlePayPerRunWithAuthorization");
   expect(decodedSettle.args[4]).toBe(1000n);
+});
+
+test("DEPOSIT passes timeoutSeconds and returns escrowExpiresAt; SETTLE_RESULT requires escrowSignature; REFUND reconciles external on-chain reclaim", async () => {
+  const { pool } = createMockPhasePool();
+  const { clients, preparedData } = createMockClients({
+    escrowExpiresAtSec: 1_800_000_900n,
+  });
+  const depositBody = {
+    ...makeDepositBody({
+      unitPriceAtomic: "500",
+      maxItemsCap: 10,
+      amount: "5000",
+      extra: {
+        name: "FACET USD",
+        version: "2",
+        pricingModel: "PAY_PER_RESULT",
+        unitPriceAtomic: "500",
+        maxItemsCap: 10,
+        providerPayTo: creator,
+        authorizationType: "ReceiveWithAuthorization",
+      },
+    }),
+    timeoutSeconds: 900,
+  };
+  const dep = await submitContractAction(
+    pool,
+    clients,
+    feeSplit,
+    "DEPOSIT",
+    depositBody,
+    100000n,
+  );
+  expect(dep.status).toBe("CONFIRMED");
+  expect((dep as { escrowExpiresAt?: string }).escrowExpiresAt).toBe(
+    new Date(1_800_000_900 * 1000).toISOString(),
+  );
+  const decodedDep = decodeFunctionData({
+    abi: escrowAbi,
+    data: preparedData[0],
+  });
+  expect(decodedDep.args[6]).toBe(900n);
+
+  // SETTLE_RESULT rejects missing escrowSignature even if legacy runnerSignature is provided
+  await expect(
+    submitContractAction(
+      pool,
+      clients,
+      feeSplit,
+      "SETTLE_RESULT",
+      {
+        runId: "019a1234-5678-7abc-8def-123456789abc",
+        inputHash: `sha256:${"1".repeat(64)}`,
+        outputHash: `sha256:${"2".repeat(64)}`,
+        itemCount: 3,
+        runnerSignature: `0x${"c".repeat(130)}`,
+      },
+      100000n,
+    ),
+  ).rejects.toThrow("CONTRACT_USAGE_INVALID");
+
+  const escrowSig = `0x${"d".repeat(130)}`;
+  const settled = await submitContractAction(
+    pool,
+    clients,
+    feeSplit,
+    "SETTLE_RESULT",
+    {
+      runId: "019a1234-5678-7abc-8def-123456789abc",
+      inputHash: `sha256:${"1".repeat(64)}`,
+      outputHash: `sha256:${"2".repeat(64)}`,
+      itemCount: 3,
+      escrowSignature: escrowSig,
+    },
+    100000n,
+  );
+  expect(settled.status).toBe("CONFIRMED");
+  const decodedSettle = decodeFunctionData({
+    abi: escrowAbi,
+    data: preparedData[1],
+  });
+  expect(decodedSettle.functionName).toBe("settleEscrow");
+  expect(decodedSettle.args[4]).toBe(escrowSig);
+
+  // REFUND detects on-chain RunState.REFUNDED (3) from permissionless external reclaim without submitting a reverting tx
+  const externalRefundClients = createMockClients({ onChainRunState: 3 });
+  const refundRes = await submitContractAction(
+    createMockPhasePool().pool,
+    externalRefundClients.clients,
+    feeSplit,
+    "REFUND",
+    { runId: "019a1234-5678-7abc-8def-123456789abd" },
+    100000n,
+  );
+  expect(refundRes.status).toBe("CONFIRMED");
+  expect((refundRes as { alreadyRefunded?: boolean }).alreadyRefunded).toBe(true);
+  expect(externalRefundClients.preparedData).toHaveLength(0);
+});
+
+test("POST /verify routes CONTRACT targets to ReceiveWithAuthorization and rejects missing authorizationType", async () => {
+  const token = "t".repeat(32);
+  const { pool } = createMockPhasePool();
+  const { clients } = createMockClients();
+  const app = buildFacilitatorApp({
+    pool,
+    clients,
+    token,
+    feeSplitAddress: feeSplit,
+    maxAmountAtomic: 100000n,
+  });
+
+  const receiveReq = {
+    ...requirements,
+    extra: {
+      name: "FACET USD",
+      version: "2",
+      authorizationType: "ReceiveWithAuthorization",
+    },
+  };
+  const validVerify = await app.inject({
+    method: "POST",
+    url: "/verify",
+    headers: { "x-facet-facilitator-token": token },
+    payload: {
+      x402Version: 2,
+      paymentRequirements: receiveReq,
+      paymentPayload: {
+        x402Version: 2,
+        accepted: receiveReq,
+        payload: body.paymentPayload.payload,
+      },
+    },
+  });
+  expect(validVerify.statusCode).toBe(200);
+  expect(validVerify.json()).toEqual({ isValid: true, payer });
+
+  const missingTypeVerify = await app.inject({
+    method: "POST",
+    url: "/verify",
+    headers: { "x-facet-facilitator-token": token },
+    payload: {
+      x402Version: 2,
+      paymentRequirements: requirements,
+      paymentPayload: {
+        x402Version: 2,
+        accepted: requirements,
+        payload: body.paymentPayload.payload,
+      },
+    },
+  });
+  expect(missingTypeVerify.statusCode).toBe(200);
+  expect(missingTypeVerify.json()).toEqual({
+    isValid: false,
+    invalidReason: "AUTHORIZATION_TYPE_MISMATCH",
+  });
+
+  await app.close();
 });
