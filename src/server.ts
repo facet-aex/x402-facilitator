@@ -230,8 +230,7 @@ export function buildFacilitatorApp({
         ) {
           const authType = (
             validated.paymentRequirements.extra as
-              | { authorizationType?: unknown }
-              | undefined
+              { authorizationType?: unknown } | undefined
           )?.authorizationType;
           if (authType !== "ReceiveWithAuthorization") {
             return {

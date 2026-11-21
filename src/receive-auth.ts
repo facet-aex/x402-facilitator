@@ -52,8 +52,7 @@ export async function verifyReceiveAuthorization(params: {
   }
 
   const extra = params.requirements.extra as
-    | { name?: string; version?: string; authorizationType?: string }
-    | undefined;
+    { name?: string; version?: string; authorizationType?: string } | undefined;
   if (
     extra?.authorizationType !== undefined &&
     extra.authorizationType !== "ReceiveWithAuthorization"

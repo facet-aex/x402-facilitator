@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "vitest";
-import { decodeFunctionData, parseAbi, verifyTypedData, type Address, type Hex } from "viem";
+import {
+  decodeFunctionData,
+  parseAbi,
+  verifyTypedData,
+  type Address,
+  type Hex,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { Pool } from "pg";
 import type { createFujiFacilitator } from "../src/fuji.js";
@@ -813,7 +819,9 @@ test("DEPOSIT passes timeoutSeconds and returns escrowExpiresAt; SETTLE_RESULT r
     100000n,
   );
   expect(refundRes.status).toBe("CONFIRMED");
-  expect((refundRes as { alreadyRefunded?: boolean }).alreadyRefunded).toBe(true);
+  expect((refundRes as { alreadyRefunded?: boolean }).alreadyRefunded).toBe(
+    true,
+  );
   expect(externalRefundClients.preparedData).toHaveLength(0);
 });
 

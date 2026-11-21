@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { privateKeyToAccount } from "viem/accounts";
-import { getAddress, verifyTypedData, type Address, type Hex, type PublicClient } from "viem";
+import {
+  getAddress,
+  verifyTypedData,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem";
 import { verifyReceiveAuthorization } from "../src/receive-auth.js";
 import { FUJI_FUSD } from "../src/fuji.js";
 
@@ -31,11 +37,16 @@ const TRANSFER_TYPES = {
   ],
 } as const;
 
-function makePublicClient(opts?: { authorizationUsed?: boolean; balance?: bigint }) {
+function makePublicClient(opts?: {
+  authorizationUsed?: boolean;
+  balance?: bigint;
+}) {
   return {
-    verifyTypedData: (args: Parameters<typeof verifyTypedData>[0]) => verifyTypedData(args),
+    verifyTypedData: (args: Parameters<typeof verifyTypedData>[0]) =>
+      verifyTypedData(args),
     readContract: async ({ functionName }: { functionName: string }) => {
-      if (functionName === "authorizationState") return opts?.authorizationUsed ?? false;
+      if (functionName === "authorizationState")
+        return opts?.authorizationUsed ?? false;
       if (functionName === "balanceOf") return opts?.balance ?? 1_000_000n;
       throw new Error(`unexpected readContract ${functionName}`);
     },
@@ -58,7 +69,10 @@ describe("verifyReceiveAuthorization", () => {
     },
   };
 
-  async function buildSignedPayload(kind: "ReceiveWithAuthorization" | "TransferWithAuthorization", key = PAYER_KEY) {
+  async function buildSignedPayload(
+    kind: "ReceiveWithAuthorization" | "TransferWithAuthorization",
+    key = PAYER_KEY,
+  ) {
     const signer = privateKeyToAccount(key);
     const authorization = {
       from: payerAccount.address,
@@ -115,7 +129,9 @@ describe("verifyReceiveAuthorization", () => {
   });
 
   it("rejects a TransferWithAuthorization signature and wrong-signer signatures", async () => {
-    const transferPayload = await buildSignedPayload("TransferWithAuthorization");
+    const transferPayload = await buildSignedPayload(
+      "TransferWithAuthorization",
+    );
     const transferRes = await verifyReceiveAuthorization({
       publicClient: makePublicClient(),
       payload: transferPayload,
@@ -123,9 +139,14 @@ describe("verifyReceiveAuthorization", () => {
       expectedRecipient: feeSplit,
     });
     expect(transferRes.isValid).toBe(false);
-    expect(transferRes.invalidReason).toBe("INVALID_RECEIVE_AUTHORIZATION_SIGNATURE");
+    expect(transferRes.invalidReason).toBe(
+      "INVALID_RECEIVE_AUTHORIZATION_SIGNATURE",
+    );
 
-    const wrongSignerPayload = await buildSignedPayload("ReceiveWithAuthorization", OTHER_KEY);
+    const wrongSignerPayload = await buildSignedPayload(
+      "ReceiveWithAuthorization",
+      OTHER_KEY,
+    );
     const wrongSignerRes = await verifyReceiveAuthorization({
       publicClient: makePublicClient(),
       payload: wrongSignerPayload,
