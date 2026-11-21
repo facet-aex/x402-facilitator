@@ -15,6 +15,7 @@ import {
   type ContractPhase,
 } from "./contract-phase-store.js";
 import type { createFujiFacilitator } from "./fuji.js";
+import { verifyReceiveAuthorization } from "./receive-auth.js";
 import {
   assertMatchingExtraFields,
   isNonZeroAddress,
@@ -22,12 +23,16 @@ import {
 } from "./request-validation.js";
 
 const DEFAULT_MAX_ITEMS_CAP = 20;
+const MIN_ESCROW_TIMEOUT_SECONDS = 300;
+const MAX_ESCROW_TIMEOUT_SECONDS = 3600;
 
 const abi = parseAbi([
   "function settlePayPerRunWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint256,bytes32,bytes)",
-  "function depositEscrowWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint256,uint256,bytes32,bytes)",
+  "function depositEscrowWithAuthorization(bytes32,bytes32,address,address,uint256,uint256,uint64,uint256,uint256,bytes32,bytes)",
   "function settleEscrow(bytes32,bytes32,bytes32,uint256,bytes)",
   "function refundEscrow(bytes32)",
+  "function runState(bytes32) view returns (uint8)",
+  "function escrows(bytes32) view returns (bytes32 facetId,address payer,address creatorPayTo,uint256 unitPriceAtomic,uint256 maxAmount,uint64 expiresAt)",
 ]);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const sha = /^sha256:([0-9a-f]{64})$/iu;
@@ -159,7 +164,12 @@ export async function submitContractAction(
       assertMatchingExtraFields(requirements.extra, payload.accepted.extra);
     }
     verify = async () => {
-      const result = await clients.facilitator.verify(payload, requirements);
+      const result = await verifyReceiveAuthorization({
+        publicClient: clients.publicClient,
+        payload,
+        requirements,
+        expectedRecipient: feeSplitAddress,
+      });
       if (
         !result.isValid ||
         result.payer?.toLowerCase() !== auth.payer.toLowerCase()
@@ -167,6 +177,18 @@ export async function submitContractAction(
         throw new Error("CONTRACT_PAYMENT_INVALID");
     };
     if (phase === "DEPOSIT") {
+      let timeoutSeconds = 0n;
+      if (body.timeoutSeconds !== undefined) {
+        if (
+          typeof body.timeoutSeconds !== "number" ||
+          !Number.isSafeInteger(body.timeoutSeconds) ||
+          body.timeoutSeconds < MIN_ESCROW_TIMEOUT_SECONDS ||
+          body.timeoutSeconds > MAX_ESCROW_TIMEOUT_SECONDS
+        ) {
+          throw new Error("CONTRACT_REQUEST_INVALID");
+        }
+        timeoutSeconds = BigInt(body.timeoutSeconds);
+      }
       functionName = "depositEscrowWithAuthorization";
       args = [
         key(runId),
@@ -175,6 +197,7 @@ export async function submitContractAction(
         body.creatorPayTo,
         unitPrice,
         auth.amount,
+        timeoutSeconds,
         auth.validAfter,
         auth.validBefore,
         auth.nonce,
@@ -199,8 +222,8 @@ export async function submitContractAction(
       !Number.isSafeInteger(body.itemCount) ||
       (body.itemCount as number) < 0 ||
       (body.itemCount as number) > 1_000_000 ||
-      typeof body.runnerSignature !== "string" ||
-      !signature.test(body.runnerSignature)
+      typeof body.escrowSignature !== "string" ||
+      !signature.test(body.escrowSignature)
     )
       throw new Error("CONTRACT_USAGE_INVALID");
     functionName = "settleEscrow";
@@ -209,14 +232,32 @@ export async function submitContractAction(
       rawHash(body.inputHash),
       rawHash(body.outputHash),
       BigInt(body.itemCount as number),
-      body.runnerSignature,
+      body.escrowSignature,
     ];
   } else {
+    try {
+      const onChainState = await clients.publicClient.readContract({
+        address: feeSplitAddress,
+        abi,
+        functionName: "runState",
+        args: [key(runId)],
+      });
+      if (Number(onChainState) === 3) {
+        return {
+          status: "CONFIRMED" as const,
+          hash: ("0x" + "0".repeat(64)) as Hex,
+          blockNumber: 0n,
+          alreadyRefunded: true,
+        };
+      }
+    } catch {
+      /* Proceed to submit refund phase via contract store. */
+    }
     functionName = "refundEscrow";
     args = [key(runId)];
   }
   const data = encodeFunctionData({ abi, functionName, args: args as never });
-  return submitContractPhase(pool, {
+  const phaseResult = await submitContractPhase(pool, {
     runId,
     phase: phase as ContractPhase,
     requestHash: hashCanonical(requestForHash),
@@ -246,4 +287,24 @@ export async function submitContractAction(
       }
     },
   });
+  if (phase === "DEPOSIT" && phaseResult.status === "CONFIRMED") {
+    try {
+      const escrowTuple = await clients.publicClient.readContract({
+        address: feeSplitAddress,
+        abi,
+        functionName: "escrows",
+        args: [key(runId)],
+      });
+      const expiresAtSec = Number(escrowTuple[5]);
+      if (Number.isSafeInteger(expiresAtSec) && expiresAtSec > 0) {
+        return {
+          ...phaseResult,
+          escrowExpiresAt: new Date(expiresAtSec * 1000).toISOString(),
+        };
+      }
+    } catch {
+      /* Return confirmed phase result even if readContract fails transiently. */
+    }
+  }
+  return phaseResult;
 }

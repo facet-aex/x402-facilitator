@@ -1,8 +1,15 @@
 import { isAddress, parseAbi, type Address, type PublicClient } from "viem";
+import { FUJI_FUSD } from "./fuji.js";
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 const abi = parseAbi([
   "function settlementOperator() view returns (address)",
   "function runnerSigner() view returns (address)",
+  "function token() view returns (address)",
+  "function owner() view returns (address)",
+  "function DEFAULT_ESCROW_TIMEOUT() view returns (uint64)",
+  "function totalEscrowed() view returns (uint256)",
 ]);
 
 export async function verifyFeeContractConfig(
@@ -26,5 +33,36 @@ export async function verifyFeeContractConfig(
     onChainRunner.toLowerCase() !== expectedRunner.toLowerCase()
   )
     throw new Error("FEE_SPLIT_RUNNER_MISMATCH");
-  return { operator: onChainOperator, runner: onChainRunner };
+
+  let onChainToken: Address;
+  let onChainOwner: Address;
+  let defaultEscrowTimeout: bigint;
+  try {
+    [onChainToken, onChainOwner, defaultEscrowTimeout] = await Promise.all([
+      client.readContract({ address, abi, functionName: "token" }),
+      client.readContract({ address, abi, functionName: "owner" }),
+      client.readContract({
+        address,
+        abi,
+        functionName: "DEFAULT_ESCROW_TIMEOUT",
+      }),
+      client.readContract({ address, abi, functionName: "totalEscrowed" }),
+    ]);
+  } catch {
+    throw new Error("FEE_SPLIT_V2_REQUIRED");
+  }
+  if (
+    onChainToken.toLowerCase() !== FUJI_FUSD.toLowerCase() ||
+    onChainOwner.toLowerCase() === ZERO_ADDRESS ||
+    defaultEscrowTimeout <= 0n
+  ) {
+    throw new Error("FEE_SPLIT_V2_REQUIRED");
+  }
+
+  return {
+    operator: onChainOperator,
+    runner: onChainRunner,
+    owner: onChainOwner,
+    defaultEscrowTimeout,
+  };
 }
